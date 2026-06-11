@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2026-06-11
+
+### Fixed
+
+- `AvitoHook.get_calls`: реальный ответ API имеет структуру `{"result": {"calls": [...]}}`, а не `{"calls": [...]}` — из-за этого оператор всегда возвращал пустой список. Код теперь поддерживает оба формата.
+
+### Changed
+
+- Добавлено итоговое INFO-сообщение в конце `get_calls`: `Collected N calls for DATE_FROM — DATE_TO`.
+
 ## [0.1.1] - 2026-06-11
 
 ### Fixed

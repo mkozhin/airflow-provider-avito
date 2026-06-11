@@ -303,6 +303,19 @@ class TestGetCalls:
         hook._get_credentials = MagicMock(return_value=("cid", "csec"))
         return hook
 
+    def test_nested_result_format(self):
+        """API returns {'result': {'calls': [...]}} — real Avito response structure."""
+        hook = self._make_hook_with_token()
+        page1 = {"result": {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")]}}
+        page2 = {"result": {"calls": []}}
+
+        with patch.object(hook, "_make_request", side_effect=[page1, page2]):
+            with patch("time.sleep"):
+                result = hook.get_calls("2026-06-09", "2026-06-09")
+
+        assert len(result) == 1
+        assert result[0]["id"] == "1"
+
     def test_single_page(self):
         hook = self._make_hook_with_token()
         page1 = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
