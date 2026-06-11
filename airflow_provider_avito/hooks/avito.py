@@ -151,7 +151,7 @@ class AvitoHook(BaseHook):
             self._token = self._fetch_token(client_id, client_secret)
         return self._token
 
-    def _make_request(self, token: str, offset: int, datetime_from: str) -> dict:
+    def _make_request(self, token: str, offset: int, datetime_from: str, datetime_to: str) -> dict:
         """POST to callsByTime with retry on 429/5xx and _AvitoAuthError on 401.
 
         On HTTP-200 responses with a non-empty ``response["error"]`` field,
@@ -164,6 +164,7 @@ class AvitoHook(BaseHook):
         }
         body = {
             "dateTimeFrom": datetime_from,
+            "dateTimeTo": datetime_to,
             "limit": _PAGE_LIMIT,
             "offset": offset,
         }
@@ -263,20 +264,21 @@ class AvitoHook(BaseHook):
         client_id, client_secret = self._get_credentials()
         token = self._get_token(client_id, client_secret)
         datetime_from = date_from + "T00:00:00+03:00"
+        datetime_to = date_to + "T23:59:59+03:00"
         limit = _PAGE_LIMIT
         offset = 0
         result: list[dict] = []
 
         while True:
             try:
-                data = self._make_request(token, offset, datetime_from)
+                data = self._make_request(token, offset, datetime_from, datetime_to)
             except _AvitoAuthError:
                 # Reset cached token and retry exactly once.
                 self._token = None
                 token = self._fetch_token(client_id, client_secret)
                 self._token = token
                 try:
-                    data = self._make_request(token, offset, datetime_from)
+                    data = self._make_request(token, offset, datetime_from, datetime_to)
                 except _AvitoAuthError as e:
                     raise AirflowException("Avito API returned 401 after token refresh") from e
 

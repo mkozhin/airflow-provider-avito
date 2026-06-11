@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-06-11
+
+### Fixed
+
+- `AvitoHook._make_request`: добавлен параметр `dateTimeTo` в тело запроса к `POST /cpa/v2/callsByTime`. Без него API возвращал пустой `{"calls": []}`, что приводило к тому, что `AvitoCallsOperator` возвращал `[]` и downstream-таски пропускались несмотря на наличие данных.
+
 ## [0.1.0] - 2026-06-11
 
 ### Added

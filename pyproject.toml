@@ -33,6 +33,7 @@ dev = ["pytest>=7.0"]
 
 [project.urls]
 Homepage = "https://github.com/mkozhin/airflow-provider-avito"
+Documentation = "https://github.com/mkozhin/airflow-provider-avito"
 Repository = "https://github.com/mkozhin/airflow-provider-avito"
 Changelog = "https://github.com/mkozhin/airflow-provider-avito/blob/main/CHANGELOG.md"
 
