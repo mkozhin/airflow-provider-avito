@@ -2,6 +2,12 @@
 
 Apache Airflow provider for [Avito CPA](https://developers.avito.ru/api-catalog/cpa/documentation) — collect call statistics from the Avito advertising platform.
 
+---
+
+*Powered by [Claude Code](https://claude.ai/code)*
+
+---
+
 ## Installation
 
 ```bash
