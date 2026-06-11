@@ -269,6 +269,8 @@ class AvitoHook(BaseHook):
         offset = 0
         result: list[dict] = []
 
+        log.info("get_calls: date_from=%s date_to=%s datetime_from=%s datetime_to=%s", date_from, date_to, datetime_from, datetime_to)
+
         while True:
             try:
                 data = self._make_request(token, offset, datetime_from, datetime_to)
@@ -282,9 +284,11 @@ class AvitoHook(BaseHook):
                 except _AvitoAuthError as e:
                     raise AirflowException("Avito API returned 401 after token refresh") from e
 
+            log.info("get_calls: offset=%d raw_response_keys=%s raw_response=%s", offset, list(data.keys()), data)
             calls = data.get("calls") or []
 
             if not calls:
+                log.info("get_calls: empty calls at offset=%d, stopping", offset)
                 break
 
             # Early-stop: if every record with a startTime is past date_to,
