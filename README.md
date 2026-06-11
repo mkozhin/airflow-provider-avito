@@ -89,7 +89,6 @@ Each record contains 17 fields:
 
 Full production examples with BigQuery + S3 upload are in [`examples/`](examples/):
 
-- [`bq_and_s3_dag.py`](examples/bq_and_s3_dag.py) — single account
 - [`bq_and_s3_multi_account_dag.py`](examples/bq_and_s3_multi_account_dag.py) — multiple accounts in parallel
 
 ## License
