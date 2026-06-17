@@ -321,3 +321,13 @@ def test_snapshot_ts_empty_result(tmp_path):
         result = op.execute(_make_context())
 
     assert result == []
+
+
+def test_snapshot_ts_requires_logical_date_in_context(tmp_path):
+    """add_snapshot_ts=True with no logical_date in context must raise KeyError, not silently skip."""
+    op = _make_operator(base_dir=str(tmp_path), add_snapshot_ts=True)
+    context = {"run_id": "manual__2026-06-01T00:00:00+00:00"}  # no logical_date
+
+    with patch.object(AvitoHook, "get_calls", return_value=[_make_record("2026-06-01", 1)]):
+        with pytest.raises(KeyError):
+            op.execute(context)

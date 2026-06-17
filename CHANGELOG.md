@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `AvitoCallsOperator`: новый параметр `add_snapshot_ts: bool = False`. Когда включён, в каждую JSON-запись (только для `output_format="json"`) добавляется поле `snapshot_ts` — `logical_date` запуска DAG в формате `YYYY-MM-DDTHH:MM:SS` — и в каждый элемент результата оператора. Позволяет строить версионированные (не перезаписывающие) пути в S3 и выбирать последний снапшот / историю изменений в ClickHouse/Spark. По умолчанию выключен — поведение без изменений.
+
+### Removed
+
+- `AvitoHook._make_request` / `get_calls`: убран параметр и поле `dateTimeTo` из тела запроса к `POST /cpa/v2/callsByTime`. `dateTimeTo` был добавлен в 0.1.1 как предполагаемая причина пустых `calls`, но настоящей причиной был баг разбора ответа (обёртка `{"result": {"calls": [...]}}`), исправленный в 0.1.2. Фильтрация по `date_to` на стороне клиента не менялась и продолжает работать как раньше.
+
 ## [0.1.2] - 2026-06-11
 
 ### Fixed

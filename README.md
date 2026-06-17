@@ -60,12 +60,29 @@ def avito_calls_example():
         date_to="{{ params.date_to }}",
         base_dir="/tmp/avito",
         output_format="json",   # or "csv"
+        add_snapshot_ts=True,   # optional, see "Snapshot versioning" below
     )
 
 avito_calls_example()
 ```
 
-The operator writes one JSONL (or CSV) file per date to `{base_dir}/{safe_run_id}/{date}.json` and returns a `list[dict]` with `{"date": "YYYY-MM-DD", "path": "..."}` entries.
+The operator writes one JSONL (or CSV) file per date to `{base_dir}/{safe_run_id}/{date}.json` and returns a `list[dict]` with `{"date": ..., "path": ..., "snapshot_ts": ...}` entries (`snapshot_ts` is `None` unless `add_snapshot_ts=True`).
+
+### Snapshot versioning (`add_snapshot_ts`)
+
+By default, each DAG run writes to the same per-date path, so re-running the DAG overwrites previous output and any history of call-status changes is lost.
+
+Set `add_snapshot_ts=True` to inject `snapshot_ts` — the DAG run's `logical_date`, formatted as `YYYY-MM-DDTHH:MM:SS` — into every JSON record and into the operator's returned `snapshot_ts` key. This lets a downstream task build a unique, non-overwriting path per run (e.g. an S3 key suffixed with the snapshot timestamp) and lets ClickHouse/Spark queries pick the latest snapshot or trace status history over time:
+
+```sql
+-- ClickHouse: latest snapshot only
+SELECT * FROM s3('s3://bucket/prefix/**/*.json', 'JSONEachRow')
+WHERE toDateTime(snapshot_ts) = (
+    SELECT MAX(toDateTime(snapshot_ts)) FROM s3('s3://bucket/prefix/**/*.json', 'JSONEachRow')
+)
+```
+
+`add_snapshot_ts` only applies to `output_format="json"`; it is ignored when `output_format="csv"` (the CSV column schema is fixed).
 
 ## Output record schema
 
@@ -90,6 +107,12 @@ Each record contains 17 fields:
 | `group_title` | str | Campaign name |
 | `is_arbitrage_available` | bool | Whether arbitrage is available |
 | `record_url` | str | Call recording URL |
+
+When `add_snapshot_ts=True` and `output_format="json"`, an 18th field is added to every record:
+
+| Field | Type | Description |
+|---|---|---|
+| `snapshot_ts` | str | DAG run's `logical_date`, ISO 8601 (`YYYY-MM-DDTHH:MM:SS`). Only present when `add_snapshot_ts=True` and `output_format="json"`. |
 
 ## Examples
 

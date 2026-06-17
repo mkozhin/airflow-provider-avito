@@ -60,12 +60,29 @@ def avito_calls_example():
         date_to="{{ params.date_to }}",
         base_dir="/tmp/avito",
         output_format="json",   # или "csv"
+        add_snapshot_ts=True,   # опционально, см. «Версионирование снапшотов» ниже
     )
 
 avito_calls_example()
 ```
 
-Оператор записывает один JSONL (или CSV) файл на каждую дату в `{base_dir}/{safe_run_id}/{date}.json` и возвращает `list[dict]` с записями вида `{"date": "YYYY-MM-DD", "path": "..."}`.
+Оператор записывает один JSONL (или CSV) файл на каждую дату в `{base_dir}/{safe_run_id}/{date}.json` и возвращает `list[dict]` с записями вида `{"date": ..., "path": ..., "snapshot_ts": ...}` (`snapshot_ts` равен `None`, если `add_snapshot_ts=False`).
+
+### Версионирование снапшотов (`add_snapshot_ts`)
+
+По умолчанию каждый запуск DAG пишет в один и тот же путь на дату, поэтому повторный запуск перезаписывает предыдущие данные и история изменений статуса звонка теряется.
+
+Параметр `add_snapshot_ts=True` добавляет поле `snapshot_ts` — `logical_date` запуска DAG в формате `YYYY-MM-DDTHH:MM:SS` — в каждую JSON-запись и в возвращаемый оператором ключ `snapshot_ts`. Это позволяет даунстрим-таску строить уникальный, не перезаписывающий путь на каждый запуск (например, ключ в S3 с суффиксом снапшота) и делать запросы в ClickHouse/Spark, выбирающие последнюю версию или историю изменений статуса:
+
+```sql
+-- ClickHouse: только последний снапшот
+SELECT * FROM s3('s3://bucket/prefix/**/*.json', 'JSONEachRow')
+WHERE toDateTime(snapshot_ts) = (
+    SELECT MAX(toDateTime(snapshot_ts)) FROM s3('s3://bucket/prefix/**/*.json', 'JSONEachRow')
+)
+```
+
+`add_snapshot_ts` применяется только к `output_format="json"`; при `output_format="csv"` параметр игнорируется (схема колонок CSV фиксирована).
 
 ## Схема записи
 
@@ -90,6 +107,12 @@ avito_calls_example()
 | `group_title` | str | Название кампании |
 | `is_arbitrage_available` | bool | Доступен ли арбитраж |
 | `record_url` | str | Ссылка на запись разговора |
+
+При `add_snapshot_ts=True` и `output_format="json"` в каждую запись добавляется 18-е поле:
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `snapshot_ts` | str | `logical_date` запуска DAG, ISO 8601 (`YYYY-MM-DDTHH:MM:SS`). Присутствует только при `add_snapshot_ts=True` и `output_format="json"`. |
 
 ### Статусы звонков
 
