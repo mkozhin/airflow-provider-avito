@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,7 +30,7 @@ def _make_operator(**kwargs) -> AvitoCallsOperator:
 
 
 def _make_context(run_id: str = "manual__2026-06-01T00:00:00+00:00") -> dict:
-    return {"run_id": run_id}
+    return {"run_id": run_id, "logical_date": datetime(2026, 6, 1, 12, 0, 0)}
 
 
 def _make_record(date: str, call_id: int = 1) -> dict:
@@ -68,6 +70,7 @@ def test_operator_execute_single_day(tmp_path):
     assert len(result) == 1
     assert result[0]["date"] == "2026-06-01"
     assert os.path.exists(result[0]["path"])
+    assert result[0]["snapshot_ts"] is None
 
 
 def test_operator_execute_multi_day(tmp_path):
@@ -87,6 +90,7 @@ def test_operator_execute_multi_day(tmp_path):
     assert dates == ["2026-06-01", "2026-06-02", "2026-06-03"]
     for entry in result:
         assert os.path.exists(entry["path"])
+        assert entry["snapshot_ts"] is None
 
 
 def test_operator_execute_empty(tmp_path):
@@ -244,3 +248,76 @@ def test_operator_write_overwrites_existing_file(tmp_path):
     with open(path, encoding="utf-8") as f:
         data = json.loads(f.readline())
     assert data["id"] == 99
+
+
+def test_snapshot_ts_added_to_json_records(tmp_path):
+    """add_snapshot_ts=True must inject snapshot_ts into every JSON record."""
+    op = _make_operator(base_dir=str(tmp_path), output_format="json", add_snapshot_ts=True)
+    records = [_make_record("2026-06-01", 1), _make_record("2026-06-01", 2)]
+
+    with patch.object(AvitoHook, "get_calls", return_value=records):
+        result = op.execute(_make_context())
+
+    path = result[0]["path"]
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    assert len(lines) == 2
+    for line in lines:
+        parsed = json.loads(line)
+        assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", parsed["snapshot_ts"])
+
+
+def test_snapshot_ts_in_result(tmp_path):
+    """add_snapshot_ts=True must put the literal logical_date-derived value into result."""
+    op = _make_operator(base_dir=str(tmp_path), add_snapshot_ts=True)
+    records = [_make_record("2026-06-01", 1), _make_record("2026-06-02", 2)]
+
+    with patch.object(AvitoHook, "get_calls", return_value=records):
+        result = op.execute(_make_context())
+
+    assert len(result) == 2
+    for entry in result:
+        assert entry["snapshot_ts"] == "2026-06-01T12:00:00"
+
+
+def test_snapshot_ts_not_added_by_default(tmp_path):
+    """add_snapshot_ts defaults to False — snapshot_ts must not appear in JSON output."""
+    op = _make_operator(base_dir=str(tmp_path), output_format="json")
+    record = _make_record("2026-06-01", 1)
+
+    with patch.object(AvitoHook, "get_calls", return_value=[record]):
+        result = op.execute(_make_context())
+
+    path = result[0]["path"]
+    with open(path, encoding="utf-8") as f:
+        parsed = json.loads(f.readline())
+    assert "snapshot_ts" not in parsed
+    assert result[0]["snapshot_ts"] is None
+
+
+def test_snapshot_ts_not_added_to_csv(tmp_path):
+    """add_snapshot_ts=True with output_format=csv must not add a snapshot_ts column."""
+    op = _make_operator(base_dir=str(tmp_path), output_format="csv", add_snapshot_ts=True)
+    record = _make_record("2026-06-01", 1)
+
+    with patch.object(AvitoHook, "get_calls", return_value=[record]):
+        result = op.execute(_make_context())
+
+    path = result[0]["path"]
+    with open(path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert "snapshot_ts" not in reader.fieldnames
+    assert len(rows) == 1
+    # result still reports snapshot_ts even though CSV doesn't carry the field
+    assert result[0]["snapshot_ts"] == "2026-06-01T12:00:00"
+
+
+def test_snapshot_ts_empty_result(tmp_path):
+    """add_snapshot_ts=True with no calls must not raise and must return an empty list."""
+    op = _make_operator(base_dir=str(tmp_path), add_snapshot_ts=True)
+
+    with patch.object(AvitoHook, "get_calls", return_value=[]):
+        result = op.execute(_make_context())
+
+    assert result == []
