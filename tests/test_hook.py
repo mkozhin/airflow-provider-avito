@@ -152,7 +152,7 @@ class TestMakeRequestRetry:
         ok = _mock_response(200, {"calls": [], "error": None})
         with patch("requests.post", side_effect=[fail, fail, ok]):
             with patch("time.sleep"):
-                result = hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00", "2026-06-09T23:59:59+03:00")
+                result = hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00")
         assert result == {"calls": [], "error": None}
 
     def test_embedded_error_raises(self):
@@ -160,14 +160,14 @@ class TestMakeRequestRetry:
         resp = _mock_response(200, {"calls": [], "error": {"code": 1002, "message": "bad"}})
         with patch("requests.post", return_value=resp):
             with pytest.raises(AirflowException, match="error"):
-                hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00", "2026-06-09T23:59:59+03:00")
+                hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00")
 
     def test_nonretryable_4xx_raises(self):
         hook = _make_hook()
         resp = _mock_response(400)
         with patch("requests.post", return_value=resp):
             with pytest.raises(AirflowException):
-                hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00", "2026-06-09T23:59:59+03:00")
+                hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00")
 
     def test_all_retries_exhausted_raises(self):
         hook = _make_hook()
@@ -175,7 +175,7 @@ class TestMakeRequestRetry:
         with patch("requests.post", side_effect=[fail, fail, fail, fail]):
             with patch("time.sleep"):
                 with pytest.raises(AirflowException, match="503"):
-                    hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00", "2026-06-09T23:59:59+03:00")
+                    hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00")
 
     def test_retries_on_429(self):
         hook = _make_hook()
@@ -183,20 +183,18 @@ class TestMakeRequestRetry:
         ok = _mock_response(200, {"calls": [], "error": None})
         with patch("requests.post", side_effect=[fail, ok]):
             with patch("time.sleep"):
-                result = hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00", "2026-06-09T23:59:59+03:00")
+                result = hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00")
         assert result == {"calls": [], "error": None}
 
     def test_request_body_and_headers(self):
         hook = _make_hook()
         ok = _mock_response(200, {"calls": [], "error": None})
         datetime_from = "2026-06-09T00:00:00+03:00"
-        datetime_to = "2026-06-09T23:59:59+03:00"
         with patch("requests.post", return_value=ok) as mock_post:
-            hook._make_request("mytoken", 500, datetime_from, datetime_to)
+            hook._make_request("mytoken", 500, datetime_from)
         call_kwargs = mock_post.call_args
         assert call_kwargs.kwargs["json"] == {
             "dateTimeFrom": datetime_from,
-            "dateTimeTo": datetime_to,
             "limit": 1000,
             "offset": 500,
         }
@@ -212,7 +210,7 @@ class TestMakeRequestRetry:
         ok = _mock_response(200, {"calls": [], "error": None})
         with patch("requests.post", side_effect=fails + [ok]):
             with patch("time.sleep") as mock_sleep:
-                hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00", "2026-06-09T23:59:59+03:00")
+                hook._make_request("tok", 0, "2026-06-09T00:00:00+03:00")
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
         assert sleep_calls == _BACKOFF_DELAYS
 
