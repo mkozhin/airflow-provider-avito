@@ -3,9 +3,9 @@ from __future__ import annotations
 import csv
 import json
 import os
-import re
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -30,7 +30,7 @@ def _make_operator(**kwargs) -> AvitoCallsOperator:
 
 
 def _make_context(run_id: str = "manual__2026-06-01T00:00:00+00:00") -> dict:
-    return {"run_id": run_id, "logical_date": datetime(2026, 6, 1, 12, 0, 0)}
+    return {"run_id": run_id, "dag_run": SimpleNamespace(start_date=datetime(2026, 6, 1, 12, 0, 0))}
 
 
 def _make_record(date: str, call_id: int = 1) -> dict:
@@ -264,11 +264,11 @@ def test_snapshot_ts_added_to_json_records(tmp_path):
     assert len(lines) == 2
     for line in lines:
         parsed = json.loads(line)
-        assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", parsed["snapshot_ts"])
+        assert parsed["snapshot_ts"] == "2026-06-01T12:00:00"
 
 
 def test_snapshot_ts_in_result(tmp_path):
-    """add_snapshot_ts=True must put the literal logical_date-derived value into result."""
+    """add_snapshot_ts=True must put the literal dag_run.start_date-derived value into result."""
     op = _make_operator(base_dir=str(tmp_path), add_snapshot_ts=True)
     records = [_make_record("2026-06-01", 1), _make_record("2026-06-02", 2)]
 
@@ -323,11 +323,11 @@ def test_snapshot_ts_empty_result(tmp_path):
     assert result == []
 
 
-def test_snapshot_ts_requires_logical_date_in_context(tmp_path):
-    """add_snapshot_ts=True with no logical_date in context must raise KeyError, not silently skip."""
+def test_snapshot_ts_requires_dag_run_in_context(tmp_path):
+    """add_snapshot_ts=True with no dag_run in context must raise KeyError, not silently skip."""
     op = _make_operator(base_dir=str(tmp_path), add_snapshot_ts=True)
-    context = {"run_id": "manual__2026-06-01T00:00:00+00:00"}  # no logical_date
+    context = {"run_id": "manual__2026-06-01T00:00:00+00:00"}  # no dag_run
 
     with patch.object(AvitoHook, "get_calls", return_value=[_make_record("2026-06-01", 1)]):
-        with pytest.raises(KeyError):
+        with pytest.raises(KeyError, match="dag_run"):
             op.execute(context)

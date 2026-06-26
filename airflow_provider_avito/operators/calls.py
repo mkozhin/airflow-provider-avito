@@ -92,7 +92,7 @@ class AvitoCallsOperator(BaseOperator):
         calls = hook.get_calls(self.date_from, self.date_to)
 
         snapshot_ts = (
-            context["logical_date"].strftime("%Y-%m-%dT%H:%M:%S") if self.add_snapshot_ts else None
+            context["dag_run"].start_date.strftime("%Y-%m-%dT%H:%M:%S") if self.add_snapshot_ts else None
         )
 
         by_date: dict[str, list[dict]] = defaultdict(list)
@@ -105,8 +105,6 @@ class AvitoCallsOperator(BaseOperator):
         result: list[CallRecord] = []
 
         for date, records in sorted(by_date.items()):
-            if not records:
-                continue
             path = self._build_path(run_id, date, self.account_id)
             if snapshot_ts and self.output_format == "json":
                 records = [{**row, "snapshot_ts": snapshot_ts} for row in records]
