@@ -72,7 +72,7 @@ The operator writes one JSONL (or CSV) file per date to `{base_dir}/{safe_run_id
 
 By default, each DAG run writes to the same per-date path, so re-running the DAG overwrites previous output and any history of call-status changes is lost.
 
-Set `add_snapshot_ts=True` to inject `snapshot_ts` — the DAG run's `logical_date`, formatted as `YYYY-MM-DDTHH:MM:SS` — into every JSON record and into the operator's returned `snapshot_ts` key. This lets a downstream task build a unique, non-overwriting path per run (e.g. an S3 key suffixed with the snapshot timestamp) and lets ClickHouse/Spark queries pick the latest snapshot or trace status history over time:
+Set `add_snapshot_ts=True` to inject `snapshot_ts` — the DAG run's `start_date` (actual wall-clock UTC start time of the run), formatted as `YYYY-MM-DDTHH:MM:SS` — into every JSON record and into the operator's returned `snapshot_ts` key. This lets a downstream task build a unique, non-overwriting path per run (e.g. an S3 key suffixed with the snapshot timestamp) and lets ClickHouse/Spark queries pick the latest snapshot or trace status history over time:
 
 ```sql
 -- ClickHouse: latest snapshot only
@@ -112,7 +112,7 @@ When `add_snapshot_ts=True` and `output_format="json"`, an 18th field is added t
 
 | Field | Type | Description |
 |---|---|---|
-| `snapshot_ts` | str | DAG run's `logical_date`, ISO 8601 (`YYYY-MM-DDTHH:MM:SS`). Only present when `add_snapshot_ts=True` and `output_format="json"`. |
+| `snapshot_ts` | str | DAG run's `start_date`, ISO 8601 (`YYYY-MM-DDTHH:MM:SS`). Only present when `add_snapshot_ts=True` and `output_format="json"`. |
 
 ## Examples
 

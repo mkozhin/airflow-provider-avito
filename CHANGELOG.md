@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-06-26
+
+### Fixed
+
+- `AvitoCallsOperator`: `snapshot_ts` теперь берётся из `dag_run.start_date` (реальное wall-clock UTC время старта прогона) вместо `logical_date` (начало data interval). Для `@daily`-DAG с `catchup=False` `logical_date` всегда равнялся полуночи предыдущих суток, что нарушало семантику поля и дедупликацию при backfill.
+
 ## [0.2.0] - 2026-06-17
 
 ### Added
