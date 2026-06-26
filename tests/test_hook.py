@@ -376,41 +376,20 @@ class TestGetCalls:
         assert len(result) == 1
         assert result[0]["id"] == "2"
 
-    def test_token_refresh_on_401(self):
-        from airflow_provider_avito.hooks.avito import _AvitoAuthError
-
+    def test_credentials_cached_across_pages(self):
+        """_get_credentials is called exactly once regardless of the number of pages fetched."""
         hook = self._make_hook_with_token()
-        hook._fetch_token = MagicMock(return_value="new_tok")
 
-        ok_page = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
-        empty_page = {"calls": [], "error": None}
+        calls_page1 = [_sample_call(i, "2026-06-09T10:00:00+03:00") for i in range(1000)]
+        page1 = {"calls": calls_page1, "error": None}
+        page2 = {"calls": [_sample_call(1001, "2026-06-09T11:00:00+03:00")], "error": None}
+        page3 = {"calls": [], "error": None}
 
-        with patch.object(
-            hook,
-            "_make_request",
-            side_effect=[_AvitoAuthError("401"), ok_page, empty_page],
-        ):
+        with patch.object(hook, "_make_request", side_effect=[page1, page2, page3]):
             with patch("time.sleep"):
-                result = hook.get_calls("2026-06-09", "2026-06-09")
+                hook.get_calls("2026-06-09", "2026-06-09")
 
-        assert len(result) == 1
-        assert hook._token == "new_tok"
-        hook._fetch_token.assert_called_once_with("cid", "csec")
-
-    def test_token_refresh_second_error_raises(self):
-        from airflow_provider_avito.hooks.avito import _AvitoAuthError
-
-        hook = self._make_hook_with_token()
-        hook._fetch_token = MagicMock(return_value="new_tok")
-
-        with patch.object(
-            hook,
-            "_make_request",
-            side_effect=[_AvitoAuthError("401"), _AvitoAuthError("401 again")],
-        ):
-            with patch("time.sleep"):
-                with pytest.raises(AirflowException, match="after token refresh"):
-                    hook.get_calls("2026-06-09", "2026-06-09")
+        hook._get_credentials.assert_called_once()
 
     def test_page_without_start_time_does_not_trigger_early_stop(self):
         """A page where no record has startTime must NOT cause early-break (vacuous truth guard)."""
@@ -429,6 +408,65 @@ class TestGetCalls:
 
         # Record 3 (from page2) is in range and must be collected
         assert any(r["id"] == "3" for r in result)
+
+
+# ---------------------------------------------------------------------------
+# Test _request_calls_page auth-lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestRequestCallsPage:
+    def _make_hook_with_token(self) -> AvitoHook:
+        hook = _make_hook()
+        hook._token = "tok"
+        hook._get_credentials = MagicMock(return_value=("cid", "csec"))
+        return hook
+
+    def test_token_refresh_on_401(self):
+        """On first 401, resets token, fetches fresh one, retries — succeeds."""
+        from airflow_provider_avito.hooks.avito import _AvitoAuthError
+
+        hook = self._make_hook_with_token()
+        hook._fetch_token = MagicMock(return_value="new_tok")
+
+        ok_page = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
+
+        with patch.object(
+            hook, "_make_request", side_effect=[_AvitoAuthError("401"), ok_page]
+        ):
+            result = hook._request_calls_page(0, "2026-06-09T00:00:00+03:00")
+
+        assert result == ok_page
+        assert hook._token == "new_tok"
+        hook._fetch_token.assert_called_once_with("cid", "csec")
+
+    def test_token_refresh_second_error_raises(self):
+        """If the retry also returns 401, an AirflowException is raised."""
+        from airflow_provider_avito.hooks.avito import _AvitoAuthError
+
+        hook = self._make_hook_with_token()
+        hook._fetch_token = MagicMock(return_value="new_tok")
+
+        with patch.object(
+            hook,
+            "_make_request",
+            side_effect=[_AvitoAuthError("401"), _AvitoAuthError("401 again")],
+        ):
+            with pytest.raises(AirflowException, match="after token refresh"):
+                hook._request_calls_page(0, "2026-06-09T00:00:00+03:00")
+
+    def test_credentials_fetched_once_per_instance(self):
+        """Repeated _request_calls_page calls share the credential cache."""
+        hook = self._make_hook_with_token()
+
+        ok_page = {"calls": [], "error": None}
+
+        with patch.object(hook, "_make_request", return_value=ok_page):
+            hook._request_calls_page(0, "2026-06-09T00:00:00+03:00")
+            hook._request_calls_page(1000, "2026-06-09T00:00:00+03:00")
+            hook._request_calls_page(2000, "2026-06-09T00:00:00+03:00")
+
+        hook._get_credentials.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

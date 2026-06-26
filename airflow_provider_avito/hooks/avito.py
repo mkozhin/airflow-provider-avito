@@ -146,6 +146,7 @@ class AvitoHook(BaseHook):
         self.avito_conn_id = avito_conn_id
         self.account_id = account_id
         self._token: str | None = None
+        self._credentials: tuple[str, str] | None = None
 
     def _get_credentials(self) -> tuple[str, str]:
         """Return (client_id, client_secret) for the configured account."""
@@ -304,6 +305,33 @@ class AvitoHook(BaseHook):
             "record_url": raw.get("recordUrl"),
         }
 
+    def _request_calls_page(self, offset: int, datetime_from: str) -> dict:
+        """Fetch one page from callsByTime, owning the full auth-lifecycle.
+
+        Lazily caches credentials (``_get_credentials`` is called at most once
+        per hook instance regardless of how many pages are fetched).  Caches the
+        OAuth token via ``_get_token``.
+
+        On HTTP 401 (``_AvitoAuthError``): resets ``self._token``, fetches a
+        fresh token, and retries the request exactly once.  If the retry also
+        returns 401 an ``AirflowException`` is raised.
+        """
+        if self._credentials is None:
+            self._credentials = self._get_credentials()
+        client_id, client_secret = self._credentials
+
+        token = self._get_token(client_id, client_secret)
+        try:
+            return self._make_request(token, offset, datetime_from)
+        except _AvitoAuthError:
+            self._token = None
+            new_token = self._fetch_token(client_id, client_secret)
+            self._token = new_token
+            try:
+                return self._make_request(new_token, offset, datetime_from)
+            except _AvitoAuthError as e:
+                raise AirflowException("Avito API returned 401 after token refresh") from e
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -317,26 +345,17 @@ class AvitoHook(BaseHook):
 
         A ``time.sleep(62)`` is inserted **only** between pages (not after the
         last page) to respect the 1 req/min rate limit on this endpoint.
+
+        Auth-lifecycle (credential caching, token refresh on 401) is fully
+        delegated to :meth:`_request_calls_page`.
         """
-        client_id, client_secret = self._get_credentials()
-        token = self._get_token(client_id, client_secret)
         datetime_from = date_from + "T00:00:00+03:00"
         limit = _PAGE_LIMIT
         offset = 0
         result: list[dict] = []
 
         while True:
-            try:
-                data = self._make_request(token, offset, datetime_from)
-            except _AvitoAuthError:
-                # Reset cached token and retry exactly once.
-                self._token = None
-                token = self._fetch_token(client_id, client_secret)
-                self._token = token
-                try:
-                    data = self._make_request(token, offset, datetime_from)
-                except _AvitoAuthError as e:
-                    raise AirflowException("Avito API returned 401 after token refresh") from e
+            data = self._request_calls_page(offset, datetime_from)
 
             payload = data.get("result", data)
             calls = payload.get("calls") or []
