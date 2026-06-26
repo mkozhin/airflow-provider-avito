@@ -22,7 +22,11 @@ class _AvitoAuthError(Exception):
 
 @dataclass
 class Account:
-    """Represents an Avito account (cabinet). The `id` is sanitized on creation."""
+    """Public identity of an Avito account (cabinet). No secrets.
+
+    The `id` is sanitized on creation: any character outside ``[\\w-]`` is
+    replaced with ``_``.
+    """
 
     id: str
 
@@ -30,37 +34,98 @@ class Account:
         self.id = re.sub(r"[^\w-]", "_", self.id)
 
 
+@dataclass
+class AccountCredentials:
+    """Internal credential holder for an Avito account. Contains secrets.
+
+    ``id`` is sanitized on creation (same rule as :class:`Account`).
+    ``id=None`` is used exclusively for the top-level single-form entry.
+    """
+
+    id: str | None
+    client_id: str | None
+    client_secret: str | None
+
+    def __post_init__(self) -> None:
+        if self.id is not None:
+            self.id = re.sub(r"[^\w-]", "_", self.id)
+
+
+@dataclass
+class AvitoConnectionConfig:
+    """Parsed representation of an Avito connection's ``extra`` field.
+
+    ``accounts`` — list of multi-form entries (from the ``accounts`` array).
+    ``single``   — top-level ``client_id``/``client_secret`` (single-account
+                   form); ``None`` when neither key is present.
+    """
+
+    accounts: list[AccountCredentials]
+    single: AccountCredentials | None
+
+
+def parse_connection(extra: dict) -> AvitoConnectionConfig:
+    """Parse ``connection.extra`` into :class:`AvitoConnectionConfig`.
+
+    Best-effort: never raises.  Skips non-dict entries and entries missing
+    ``id`` (emits WARNING).  Deduplicates by sanitized id, keeping the first
+    occurrence (WARNING).  Top-level ``client_id``/``client_secret`` become
+    ``single``.
+    """
+    raw_accounts = extra.get("accounts") or []
+    accounts: list[AccountCredentials] = []
+    seen: set[str] = set()
+
+    for entry in raw_accounts:
+        if not isinstance(entry, dict):
+            log.warning("Skipping non-dict account entry: %r", entry)
+            continue
+        if "id" not in entry or entry["id"] is None:
+            log.warning("Skipping account entry missing required 'id' key: %r", entry)
+            continue
+        original_id = entry["id"]
+        ac = AccountCredentials(
+            id=original_id,
+            client_id=entry.get("client_id"),
+            client_secret=entry.get("client_secret"),
+        )
+        if ac.id in seen:
+            log.warning(
+                "Duplicate account id after sanitization: %r becomes %r. "
+                "Keeping the first, skipping the second.",
+                original_id,
+                ac.id,
+            )
+        else:
+            seen.add(ac.id)  # type: ignore[arg-type]
+            accounts.append(ac)
+
+    client_id = extra.get("client_id")
+    client_secret = extra.get("client_secret")
+    single: AccountCredentials | None = (
+        AccountCredentials(id=None, client_id=client_id, client_secret=client_secret)
+        if client_id is not None or client_secret is not None
+        else None
+    )
+
+    return AvitoConnectionConfig(accounts=accounts, single=single)
+
+
 def get_accounts(conn_id: str) -> list[Account]:
     """Read accounts from the Airflow connection extra field.
 
-    Returns a list of Account objects (sanitized ids). Returns [] on any error
-    (missing connection, missing key, etc.) — callers must not raise.
+    Returns a list of :class:`Account` objects (sanitized ids). Returns ``[]``
+    on any error (missing connection, missing key, etc.) — callers must not
+    raise.
 
     Duplicate sanitized ids are deduplicated: only the first account is kept
-    and a WARNING is logged.
+    and a WARNING is logged.  The top-level single-form entry (``client_id`` /
+    ``client_secret`` without an ``accounts`` array) is **not** included.
     """
     try:
         conn = BaseHook.get_connection(conn_id)
-        raw_accounts = conn.extra_dejson.get("accounts", [])
-        accounts: list[Account] = []
-        seen: set[str] = set()
-        for entry in raw_accounts:
-            if "id" not in entry:
-                log.warning("Skipping account entry missing required 'id' key: %r", entry)
-                continue
-            original_id = entry["id"]
-            acc = Account(id=original_id)
-            if acc.id in seen:
-                log.warning(
-                    "Duplicate account id after sanitization: %r becomes %r. "
-                    "Keeping the first, skipping the second.",
-                    original_id,
-                    acc.id,
-                )
-            else:
-                seen.add(acc.id)
-                accounts.append(acc)
-        return accounts
+        config = parse_connection(conn.extra_dejson)
+        return [Account(id=ac.id) for ac in config.accounts if ac.id is not None]
     except Exception:
         log.warning(
             "Could not load accounts from connection %r. Returning empty list.",
@@ -85,36 +150,29 @@ class AvitoHook(BaseHook):
     def _get_credentials(self) -> tuple[str, str]:
         """Return (client_id, client_secret) for the configured account."""
         conn = self.get_connection(self.avito_conn_id)
-        extra = conn.extra_dejson
+        config = parse_connection(conn.extra_dejson)
 
         if self.account_id is not None:
-            raw_accounts = extra.get("accounts", [])
-            for entry in raw_accounts:
-                if "id" not in entry:
-                    continue
-                if Account(id=entry["id"]).id == self.account_id:
-                    client_id = entry.get("client_id")
-                    client_secret = entry.get("client_secret")
-                    if not client_id or not client_secret:
+            for ac in config.accounts:
+                if ac.id == self.account_id:
+                    if not ac.client_id or not ac.client_secret:
                         raise AirflowException(
                             f"Account id={self.account_id!r} found in connection "
                             f"{self.avito_conn_id!r} but is missing required "
                             f"'client_id' or 'client_secret' fields"
                         )
-                    return client_id, client_secret
+                    return ac.client_id, ac.client_secret
             raise AirflowException(
                 f"Account id={self.account_id!r} not found in connection "
                 f"{self.avito_conn_id!r} extra.accounts"
             )
 
-        client_id = extra.get("client_id")
-        client_secret = extra.get("client_secret")
-        if not client_id or not client_secret:
+        if config.single is None or not config.single.client_id or not config.single.client_secret:
             raise AirflowException(
                 f"Connection {self.avito_conn_id!r} extra is missing "
                 f"'client_id' or 'client_secret' and no account_id was provided."
             )
-        return client_id, client_secret
+        return config.single.client_id, config.single.client_secret
 
     def _fetch_token(self, client_id: str, client_secret: str) -> str:
         """Fetch a new OAuth2 access token using client_credentials grant."""

@@ -7,7 +7,7 @@ import pytest
 from airflow.exceptions import AirflowException
 from airflow.models import Connection
 
-from airflow_provider_avito.hooks.avito import Account, AvitoHook, get_accounts
+from airflow_provider_avito.hooks.avito import Account, AvitoHook, get_accounts, parse_connection
 
 
 # ---------------------------------------------------------------------------
@@ -499,3 +499,129 @@ class TestGetAccounts:
         ):
             result = get_accounts("nonexistent")
         assert result == []
+
+    def test_single_form_returns_empty_list(self):
+        """get_accounts for single-form extra returns [] (single entry not exposed)."""
+        conn = Connection(
+            conn_id="avito_test",
+            conn_type="http",
+            extra=json.dumps({"client_id": "cid", "client_secret": "csec"}),
+        )
+        with patch("airflow.hooks.base.BaseHook.get_connection", return_value=conn):
+            result = get_accounts("avito_test")
+        assert result == []
+
+    def test_malform_non_dict_entry(self):
+        """Non-dict entries in accounts are skipped; get_accounts returns []."""
+        conn = Connection(
+            conn_id="avito_test",
+            conn_type="http",
+            extra=json.dumps({"accounts": ["not-a-dict", 42]}),
+        )
+        with patch("airflow.hooks.base.BaseHook.get_connection", return_value=conn):
+            result = get_accounts("avito_test")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Test parse_connection
+# ---------------------------------------------------------------------------
+
+
+class TestParseConnection:
+    def test_single_form(self):
+        """Top-level client_id/client_secret → single; accounts list is empty."""
+        config = parse_connection({"client_id": "cid", "client_secret": "csec"})
+        assert config.accounts == []
+        assert config.single is not None
+        assert config.single.id is None
+        assert config.single.client_id == "cid"
+        assert config.single.client_secret == "csec"
+
+    def test_multi_form(self):
+        """Multi-account form populates accounts list."""
+        extra = {
+            "accounts": [
+                {"id": "acc1", "client_id": "c1", "client_secret": "s1"},
+                {"id": "acc2", "client_id": "c2", "client_secret": "s2"},
+            ]
+        }
+        config = parse_connection(extra)
+        assert len(config.accounts) == 2
+        assert config.accounts[0].id == "acc1"
+        assert config.accounts[0].client_id == "c1"
+        assert config.accounts[1].id == "acc2"
+        assert config.single is None
+
+    def test_entry_without_id_skipped(self):
+        """Entry missing 'id' key is skipped; valid entries remain."""
+        extra = {
+            "accounts": [
+                {"client_id": "c1", "client_secret": "s1"},  # no id
+                {"id": "acc2", "client_id": "c2", "client_secret": "s2"},
+            ]
+        }
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "acc2"
+
+    def test_dedup_by_sanitized_id(self):
+        """Two entries that map to the same sanitized id: first kept, second dropped."""
+        extra = {
+            "accounts": [
+                {"id": "a.b", "client_id": "c1", "client_secret": "s1"},
+                {"id": "a/b", "client_id": "c2", "client_secret": "s2"},
+            ]
+        }
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "a_b"
+        assert config.accounts[0].client_id == "c1"
+
+    def test_account_without_secrets_included(self):
+        """Entry with id but no secrets is kept in accounts (policy belongs to caller)."""
+        extra = {"accounts": [{"id": "acc1"}]}
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "acc1"
+        assert config.accounts[0].client_id is None
+        assert config.accounts[0].client_secret is None
+
+    def test_empty_extra(self):
+        """Empty extra dict → empty accounts and no single."""
+        config = parse_connection({})
+        assert config.accounts == []
+        assert config.single is None
+
+    def test_id_sanitization(self):
+        """Special chars in id are replaced with underscore."""
+        extra = {"accounts": [{"id": "a.b.c", "client_id": "c1", "client_secret": "s1"}]}
+        config = parse_connection(extra)
+        assert config.accounts[0].id == "a_b_c"
+
+    def test_non_dict_entry_skipped(self):
+        """Non-dict entries in accounts list are skipped without raising."""
+        extra = {"accounts": ["bad-entry", 42, None, {"id": "ok", "client_id": "c", "client_secret": "s"}]}
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Test _get_credentials sanitization regression
+# ---------------------------------------------------------------------------
+
+
+class TestGetCredentialsSanitization:
+    def test_sanitized_id_matches_sanitized_account_id(self):
+        """account_id='a_b' (already sanitized) matches entry with id='a.b'."""
+        hook = AvitoHook(avito_conn_id="avito_test", account_id="a_b")
+        conn = Connection(
+            conn_id="avito_test",
+            conn_type="http",
+            extra=json.dumps(
+                {"accounts": [{"id": "a.b", "client_id": "c1", "client_secret": "s1"}]}
+            ),
+        )
+        hook.get_connection = MagicMock(return_value=conn)
+        assert hook._get_credentials() == ("c1", "s1")
