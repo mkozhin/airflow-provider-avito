@@ -135,6 +135,32 @@ def get_accounts(conn_id: str) -> list[Account]:
         return []
 
 
+#: Canonical ordered tuple of call record field names.
+#: This is the single source of truth for field names and their order.
+#: ``AvitoHook._map_record`` returns a dict whose keys follow this order;
+#: ``AvitoCallsOperator._CSV_FIELDS`` is derived from this tuple so that
+#: CSV column order matches exactly.
+CALL_FIELDS: tuple[str, ...] = (
+    "id",
+    "buyer_phone",
+    "seller_phone",
+    "virtual_phone",
+    "create_time",
+    "start_time",
+    "date",
+    "duration",
+    "waiting_duration",
+    "price",
+    "price_rub",
+    "status_id",
+    "status",
+    "item_id",
+    "group_title",
+    "is_arbitrage_available",
+    "record_url",
+)
+
+
 class AvitoHook(BaseHook):
     conn_name_attr = "avito_conn_id"
     default_conn_name = "avito_default"
