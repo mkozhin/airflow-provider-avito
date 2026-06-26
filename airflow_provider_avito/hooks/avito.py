@@ -15,6 +15,33 @@ _RETRY_STATUSES = (429, 500, 502, 503, 504)
 _BACKOFF_DELAYS = [1, 2, 4]
 _PAGE_LIMIT = 1000
 
+#: Canonical ordered tuple of call record field names.
+#: This is the single source of truth for field names and their order.
+#: ``AvitoHook._map_record`` returns a dict whose keys follow this order;
+#: ``AvitoCallsOperator._CSV_FIELDS`` is derived from this tuple so that
+#: CSV column order matches exactly.
+CALL_FIELDS: tuple[str, ...] = (
+    "id",
+    "buyer_phone",
+    "seller_phone",
+    "virtual_phone",
+    "create_time",
+    "start_time",
+    "date",
+    "duration",
+    "waiting_duration",
+    "price",
+    "price_rub",
+    "status_id",
+    "status",
+    "item_id",
+    "group_title",
+    "is_arbitrage_available",
+    "record_url",
+)
+
+_SANITIZE_RE = re.compile(r"[^\w-]")
+
 
 class _AvitoAuthError(Exception):
     """Raised by _make_request on HTTP 401 so the caller can refresh the token and retry."""
@@ -31,7 +58,7 @@ class Account:
     id: str
 
     def __post_init__(self) -> None:
-        self.id = re.sub(r"[^\w-]", "_", self.id)
+        self.id = _SANITIZE_RE.sub("_", self.id)
 
 
 @dataclass
@@ -48,7 +75,7 @@ class AccountCredentials:
 
     def __post_init__(self) -> None:
         if self.id is not None:
-            self.id = re.sub(r"[^\w-]", "_", self.id)
+            self.id = _SANITIZE_RE.sub("_", self.id)
 
 
 @dataclass
@@ -64,6 +91,17 @@ class AvitoConnectionConfig:
     single: AccountCredentials | None
 
 
+def _redact(entry: object) -> object:
+    """Return *entry* with credential fields masked for safe log output.
+
+    If *entry* is a dict, ``client_id`` and ``client_secret`` values are
+    replaced with ``'***'``.  All other types are returned unchanged.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    return {k: ("***" if k in ("client_id", "client_secret") else v) for k, v in entry.items()}
+
+
 def parse_connection(extra: dict) -> AvitoConnectionConfig:
     """Parse ``connection.extra`` into :class:`AvitoConnectionConfig`.
 
@@ -72,16 +110,30 @@ def parse_connection(extra: dict) -> AvitoConnectionConfig:
     occurrence (WARNING).  Top-level ``client_id``/``client_secret`` become
     ``single``.
     """
-    raw_accounts = extra.get("accounts") or []
+    raw_accounts = extra.get("accounts")
+    if not isinstance(raw_accounts, list):
+        if raw_accounts is not None:
+            log.warning(
+                "'accounts' field is not a list (got %s). Ignoring.",
+                type(raw_accounts).__name__,
+            )
+        raw_accounts = []
     accounts: list[AccountCredentials] = []
     seen: set[str] = set()
 
     for entry in raw_accounts:
         if not isinstance(entry, dict):
-            log.warning("Skipping non-dict account entry: %r", entry)
+            log.warning("Skipping non-dict account entry (got %s)", type(entry).__name__)
             continue
         if "id" not in entry or entry["id"] is None:
-            log.warning("Skipping account entry missing required 'id' key: %r", entry)
+            log.warning("Skipping account entry: 'id' is missing or None: %r", _redact(entry))
+            continue
+        if not isinstance(entry["id"], str):
+            log.warning(
+                "Skipping account entry: 'id' must be a string, got %r: %r",
+                type(entry["id"]).__name__,
+                _redact(entry),
+            )
             continue
         original_id = entry["id"]
         ac = AccountCredentials(
@@ -97,7 +149,7 @@ def parse_connection(extra: dict) -> AvitoConnectionConfig:
                 ac.id,
             )
         else:
-            seen.add(ac.id)  # type: ignore[arg-type]
+            seen.add(ac.id)
             accounts.append(ac)
 
     client_id = extra.get("client_id")
@@ -133,32 +185,6 @@ def get_accounts(conn_id: str) -> list[Account]:
             exc_info=True,
         )
         return []
-
-
-#: Canonical ordered tuple of call record field names.
-#: This is the single source of truth for field names and their order.
-#: ``AvitoHook._map_record`` returns a dict whose keys follow this order;
-#: ``AvitoCallsOperator._CSV_FIELDS`` is derived from this tuple so that
-#: CSV column order matches exactly.
-CALL_FIELDS: tuple[str, ...] = (
-    "id",
-    "buyer_phone",
-    "seller_phone",
-    "virtual_phone",
-    "create_time",
-    "start_time",
-    "date",
-    "duration",
-    "waiting_duration",
-    "price",
-    "price_rub",
-    "status_id",
-    "status",
-    "item_id",
-    "group_title",
-    "is_arbitrage_available",
-    "record_url",
-)
 
 
 class AvitoHook(BaseHook):
@@ -351,11 +377,11 @@ class AvitoHook(BaseHook):
             return self._make_request(token, offset, datetime_from)
         except _AvitoAuthError:
             self._token = None
-            new_token = self._fetch_token(client_id, client_secret)
-            self._token = new_token
+            new_token = self._get_token(client_id, client_secret)
             try:
                 return self._make_request(new_token, offset, datetime_from)
             except _AvitoAuthError as e:
+                self._token = None  # ensure next invocation fetches fresh
                 raise AirflowException("Avito API returned 401 after token refresh") from e
 
     # ------------------------------------------------------------------

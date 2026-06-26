@@ -26,6 +26,13 @@ def _make_hook(extra: dict | None = None) -> AvitoHook:
     return hook
 
 
+def _make_hook_with_token() -> AvitoHook:
+    hook = _make_hook()
+    hook._token = "tok"
+    hook._get_credentials = MagicMock(return_value=("cid", "csec"))
+    return hook
+
+
 def _mock_response(status_code: int, json_data: dict | None = None) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
@@ -295,15 +302,9 @@ class TestMapRecord:
 
 
 class TestGetCalls:
-    def _make_hook_with_token(self) -> AvitoHook:
-        hook = _make_hook()
-        hook._token = "tok"
-        hook._get_credentials = MagicMock(return_value=("cid", "csec"))
-        return hook
-
     def test_nested_result_format(self):
         """API returns {'result': {'calls': [...]}} — real Avito response structure."""
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         page1 = {"result": {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")]}}
         page2 = {"result": {"calls": []}}
 
@@ -315,7 +316,7 @@ class TestGetCalls:
         assert result[0]["id"] == "1"
 
     def test_single_page(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         page1 = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
         page2 = {"calls": [], "error": None}
 
@@ -327,7 +328,7 @@ class TestGetCalls:
         assert result[0]["id"] == "1"
 
     def test_pagination_two_pages(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         calls_page1 = [_sample_call(i, "2026-06-09T10:00:00+03:00") for i in range(1000)]
         page1 = {"calls": calls_page1, "error": None}
         calls_page2 = [_sample_call(1001, "2026-06-09T11:00:00+03:00")]
@@ -343,7 +344,7 @@ class TestGetCalls:
         assert mock_sleep.call_count == 1
 
     def test_early_stop_past_date_to(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         # All calls are past date_to
         page1 = {
             "calls": [_sample_call(1, "2026-06-11T10:00:00+03:00")],
@@ -358,7 +359,7 @@ class TestGetCalls:
         mock_sleep.assert_not_called()
 
     def test_filters_calls_outside_range(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         page1 = {
             "calls": [
                 _sample_call(1, "2026-06-08T10:00:00+03:00"),  # before range
@@ -376,24 +377,31 @@ class TestGetCalls:
         assert len(result) == 1
         assert result[0]["id"] == "2"
 
-    def test_credentials_cached_across_pages(self):
-        """_get_credentials is called exactly once regardless of the number of pages fetched."""
-        hook = self._make_hook_with_token()
+    def test_multi_day_range(self):
+        """Records on boundary dates included; records outside excluded; early-stop respected."""
+        hook = _make_hook_with_token()
+        page1 = {
+            "calls": [
+                _sample_call(1, "2026-06-07T23:59:00+03:00"),  # before range
+                _sample_call(2, "2026-06-08T00:01:00+03:00"),  # boundary: first day
+                _sample_call(3, "2026-06-09T12:00:00+03:00"),  # middle
+                _sample_call(4, "2026-06-10T23:59:00+03:00"),  # boundary: last day
+                _sample_call(5, "2026-06-11T00:01:00+03:00"),  # after range
+            ],
+            "error": None,
+        }
+        page2 = {"calls": [], "error": None}
 
-        calls_page1 = [_sample_call(i, "2026-06-09T10:00:00+03:00") for i in range(1000)]
-        page1 = {"calls": calls_page1, "error": None}
-        page2 = {"calls": [_sample_call(1001, "2026-06-09T11:00:00+03:00")], "error": None}
-        page3 = {"calls": [], "error": None}
-
-        with patch.object(hook, "_make_request", side_effect=[page1, page2, page3]):
+        with patch.object(hook, "_make_request", side_effect=[page1, page2]):
             with patch("time.sleep"):
-                hook.get_calls("2026-06-09", "2026-06-09")
+                result = hook.get_calls("2026-06-08", "2026-06-10")
 
-        hook._get_credentials.assert_called_once()
+        assert len(result) == 3
+        assert {r["id"] for r in result} == {"2", "3", "4"}
 
     def test_page_without_start_time_does_not_trigger_early_stop(self):
         """A page where no record has startTime must NOT cause early-break (vacuous truth guard)."""
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         # Page has records but none have startTime — must not early-break
         page1 = {"calls": [{"id": 1}, {"id": 2}], "error": None}
         page2 = {
@@ -406,8 +414,9 @@ class TestGetCalls:
             with patch("time.sleep"):
                 result = hook.get_calls("2026-06-09", "2026-06-09")
 
-        # Record 3 (from page2) is in range and must be collected
-        assert any(r["id"] == "3" for r in result)
+        # Record 3 (from page2) is in range; records 1 & 2 have date=None and must be excluded
+        assert len(result) == 1
+        assert result[0]["id"] == "3"
 
 
 # ---------------------------------------------------------------------------
@@ -416,17 +425,11 @@ class TestGetCalls:
 
 
 class TestRequestCallsPage:
-    def _make_hook_with_token(self) -> AvitoHook:
-        hook = _make_hook()
-        hook._token = "tok"
-        hook._get_credentials = MagicMock(return_value=("cid", "csec"))
-        return hook
-
     def test_token_refresh_on_401(self):
         """On first 401, resets token, fetches fresh one, retries — succeeds."""
         from airflow_provider_avito.hooks.avito import _AvitoAuthError
 
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         hook._fetch_token = MagicMock(return_value="new_tok")
 
         ok_page = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
@@ -444,7 +447,7 @@ class TestRequestCallsPage:
         """If the retry also returns 401, an AirflowException is raised."""
         from airflow_provider_avito.hooks.avito import _AvitoAuthError
 
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         hook._fetch_token = MagicMock(return_value="new_tok")
 
         with patch.object(
@@ -457,7 +460,7 @@ class TestRequestCallsPage:
 
     def test_credentials_fetched_once_per_instance(self):
         """Repeated _request_calls_page calls share the credential cache."""
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
 
         ok_page = {"calls": [], "error": None}
 
@@ -643,6 +646,25 @@ class TestParseConnection:
         config = parse_connection(extra)
         assert len(config.accounts) == 1
         assert config.accounts[0].id == "ok"
+
+    def test_entry_with_id_none_skipped(self):
+        """Entry with key 'id' present but value None is skipped; accounts list is empty."""
+        extra = {"accounts": [{"id": None, "client_id": "c", "client_secret": "s"}]}
+        config = parse_connection(extra)
+        assert config.accounts == []
+
+    def test_entry_with_non_string_id_skipped(self):
+        """Entry with a non-string 'id' (e.g. integer) is skipped without raising."""
+        extra = {"accounts": [{"id": 123, "client_id": "c", "client_secret": "s"}]}
+        config = parse_connection(extra)
+        assert config.accounts == []
+
+    def test_non_list_accounts_field_ignored(self):
+        """A truthy non-list 'accounts' value (e.g. int) is treated as absent — no TypeError."""
+        config = parse_connection({"accounts": 42})
+        assert config.accounts == []
+        config2 = parse_connection({"accounts": True})
+        assert config2.accounts == []
 
 
 # ---------------------------------------------------------------------------

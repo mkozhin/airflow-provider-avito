@@ -146,8 +146,8 @@ def test_operator_csv_output(tmp_path):
     assert len(rows) == 1
     assert rows[0]["id"] == "42"
     assert rows[0]["date"] == "2026-06-01"
-    # Verify all CSV fields are present as headers
-    assert set(reader.fieldnames) == set(_CSV_FIELDS)
+    # Verify CSV headers match exactly — both content and order
+    assert reader.fieldnames == _CSV_FIELDS
 
 
 def test_operator_invalid_format():
