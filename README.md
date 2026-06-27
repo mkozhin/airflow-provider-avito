@@ -86,7 +86,7 @@ WHERE toDateTime(snapshot_ts) = (
 
 ## Output record schema
 
-Each record contains 17 fields:
+Each record contains 17 fields. The canonical ordered list of field names is also available as `CALL_FIELDS` (a `tuple[str, ...]` exported from `airflow_provider_avito.hooks.avito`) for use in downstream schema definitions or validation.
 
 | Field | Type | Description |
 |---|---|---|
