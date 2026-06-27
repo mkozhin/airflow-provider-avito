@@ -114,6 +114,15 @@ When `add_snapshot_ts=True` and `output_format="json"`, an 18th field is added t
 |---|---|---|
 | `snapshot_ts` | str | DAG run's `start_date`, ISO 8601 (`YYYY-MM-DDTHH:MM:SS`). Only present when `add_snapshot_ts=True` and `output_format="json"`. |
 
+### Call statuses
+
+| `status_id` | `status` |
+|---|---|
+| 0 | Целевой |
+| 1 | На модерации |
+| 2 | Целевой после модерации |
+| 3 | Нецелевой после модерации |
+
 ## Examples
 
 Full production examples with BigQuery + S3 upload are in [`examples/`](examples/):
