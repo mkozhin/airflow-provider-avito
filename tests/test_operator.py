@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from airflow_provider_avito.hooks.avito import AvitoHook
+from airflow_provider_avito.hooks.avito import AvitoHook, CALL_FIELDS
 from airflow_provider_avito.operators.calls import AvitoCallsOperator, _CSV_FIELDS
 
 
@@ -146,8 +146,8 @@ def test_operator_csv_output(tmp_path):
     assert len(rows) == 1
     assert rows[0]["id"] == "42"
     assert rows[0]["date"] == "2026-06-01"
-    # Verify all CSV fields are present as headers
-    assert set(reader.fieldnames) == set(_CSV_FIELDS)
+    # Verify CSV headers match exactly — both content and order
+    assert reader.fieldnames == _CSV_FIELDS
 
 
 def test_operator_invalid_format():
@@ -182,10 +182,8 @@ def test_operator_path_without_account_id(tmp_path):
 
 
 def test_csv_fields_match_mapped_record():
-    """_CSV_FIELDS must match the keys produced by AvitoHook._map_record."""
-    from airflow_provider_avito.hooks.avito import AvitoHook as _Hook
-
-    hook = _Hook.__new__(_Hook)
+    """CALL_FIELDS must match — in order — the keys produced by AvitoHook._map_record."""
+    hook = AvitoHook.__new__(AvitoHook)
     raw = {
         "id": 1,
         "buyerPhone": "+7000",
@@ -203,7 +201,7 @@ def test_csv_fields_match_mapped_record():
         "recordUrl": "https://example.com/rec.mp3",
     }
     record = hook._map_record(raw)
-    assert set(_CSV_FIELDS) == set(record.keys())
+    assert tuple(record.keys()) == CALL_FIELDS
 
 
 def test_operator_passes_account_id_to_hook(tmp_path):

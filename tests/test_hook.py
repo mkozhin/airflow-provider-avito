@@ -7,7 +7,7 @@ import pytest
 from airflow.exceptions import AirflowException
 from airflow.models import Connection
 
-from airflow_provider_avito.hooks.avito import Account, AvitoHook, get_accounts
+from airflow_provider_avito.hooks.avito import Account, AvitoHook, get_accounts, parse_connection
 
 
 # ---------------------------------------------------------------------------
@@ -23,6 +23,13 @@ def _make_hook(extra: dict | None = None) -> AvitoHook:
         extra=json.dumps(extra or {"client_id": "cid", "client_secret": "csec"}),
     )
     hook.get_connection = MagicMock(return_value=conn)
+    return hook
+
+
+def _make_hook_with_token() -> AvitoHook:
+    hook = _make_hook()
+    hook._token = "tok"
+    hook._get_credentials = MagicMock(return_value=("cid", "csec"))
     return hook
 
 
@@ -295,15 +302,9 @@ class TestMapRecord:
 
 
 class TestGetCalls:
-    def _make_hook_with_token(self) -> AvitoHook:
-        hook = _make_hook()
-        hook._token = "tok"
-        hook._get_credentials = MagicMock(return_value=("cid", "csec"))
-        return hook
-
     def test_nested_result_format(self):
         """API returns {'result': {'calls': [...]}} — real Avito response structure."""
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         page1 = {"result": {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")]}}
         page2 = {"result": {"calls": []}}
 
@@ -315,7 +316,7 @@ class TestGetCalls:
         assert result[0]["id"] == "1"
 
     def test_single_page(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         page1 = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
         page2 = {"calls": [], "error": None}
 
@@ -327,7 +328,7 @@ class TestGetCalls:
         assert result[0]["id"] == "1"
 
     def test_pagination_two_pages(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         calls_page1 = [_sample_call(i, "2026-06-09T10:00:00+03:00") for i in range(1000)]
         page1 = {"calls": calls_page1, "error": None}
         calls_page2 = [_sample_call(1001, "2026-06-09T11:00:00+03:00")]
@@ -343,7 +344,7 @@ class TestGetCalls:
         assert mock_sleep.call_count == 1
 
     def test_early_stop_past_date_to(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         # All calls are past date_to
         page1 = {
             "calls": [_sample_call(1, "2026-06-11T10:00:00+03:00")],
@@ -358,7 +359,7 @@ class TestGetCalls:
         mock_sleep.assert_not_called()
 
     def test_filters_calls_outside_range(self):
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         page1 = {
             "calls": [
                 _sample_call(1, "2026-06-08T10:00:00+03:00"),  # before range
@@ -376,45 +377,31 @@ class TestGetCalls:
         assert len(result) == 1
         assert result[0]["id"] == "2"
 
-    def test_token_refresh_on_401(self):
-        from airflow_provider_avito.hooks.avito import _AvitoAuthError
+    def test_multi_day_range(self):
+        """Records on boundary dates included; records outside excluded; early-stop respected."""
+        hook = _make_hook_with_token()
+        page1 = {
+            "calls": [
+                _sample_call(1, "2026-06-07T23:59:00+03:00"),  # before range
+                _sample_call(2, "2026-06-08T00:01:00+03:00"),  # boundary: first day
+                _sample_call(3, "2026-06-09T12:00:00+03:00"),  # middle
+                _sample_call(4, "2026-06-10T23:59:00+03:00"),  # boundary: last day
+                _sample_call(5, "2026-06-11T00:01:00+03:00"),  # after range
+            ],
+            "error": None,
+        }
+        page2 = {"calls": [], "error": None}
 
-        hook = self._make_hook_with_token()
-        hook._fetch_token = MagicMock(return_value="new_tok")
-
-        ok_page = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
-        empty_page = {"calls": [], "error": None}
-
-        with patch.object(
-            hook,
-            "_make_request",
-            side_effect=[_AvitoAuthError("401"), ok_page, empty_page],
-        ):
+        with patch.object(hook, "_make_request", side_effect=[page1, page2]):
             with patch("time.sleep"):
-                result = hook.get_calls("2026-06-09", "2026-06-09")
+                result = hook.get_calls("2026-06-08", "2026-06-10")
 
-        assert len(result) == 1
-        assert hook._token == "new_tok"
-        hook._fetch_token.assert_called_once_with("cid", "csec")
-
-    def test_token_refresh_second_error_raises(self):
-        from airflow_provider_avito.hooks.avito import _AvitoAuthError
-
-        hook = self._make_hook_with_token()
-        hook._fetch_token = MagicMock(return_value="new_tok")
-
-        with patch.object(
-            hook,
-            "_make_request",
-            side_effect=[_AvitoAuthError("401"), _AvitoAuthError("401 again")],
-        ):
-            with patch("time.sleep"):
-                with pytest.raises(AirflowException, match="after token refresh"):
-                    hook.get_calls("2026-06-09", "2026-06-09")
+        assert len(result) == 3
+        assert {r["id"] for r in result} == {"2", "3", "4"}
 
     def test_page_without_start_time_does_not_trigger_early_stop(self):
         """A page where no record has startTime must NOT cause early-break (vacuous truth guard)."""
-        hook = self._make_hook_with_token()
+        hook = _make_hook_with_token()
         # Page has records but none have startTime — must not early-break
         page1 = {"calls": [{"id": 1}, {"id": 2}], "error": None}
         page2 = {
@@ -427,8 +414,62 @@ class TestGetCalls:
             with patch("time.sleep"):
                 result = hook.get_calls("2026-06-09", "2026-06-09")
 
-        # Record 3 (from page2) is in range and must be collected
-        assert any(r["id"] == "3" for r in result)
+        # Record 3 (from page2) is in range; records 1 & 2 have date=None and must be excluded
+        assert len(result) == 1
+        assert result[0]["id"] == "3"
+
+
+# ---------------------------------------------------------------------------
+# Test _request_calls_page auth-lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestRequestCallsPage:
+    def test_token_refresh_on_401(self):
+        """On first 401, resets token, fetches fresh one, retries — succeeds."""
+        from airflow_provider_avito.hooks.avito import _AvitoAuthError
+
+        hook = _make_hook_with_token()
+        hook._fetch_token = MagicMock(return_value="new_tok")
+
+        ok_page = {"calls": [_sample_call(1, "2026-06-09T10:00:00+03:00")], "error": None}
+
+        with patch.object(
+            hook, "_make_request", side_effect=[_AvitoAuthError("401"), ok_page]
+        ):
+            result = hook._request_calls_page(0, "2026-06-09T00:00:00+03:00")
+
+        assert result == ok_page
+        assert hook._token == "new_tok"
+        hook._fetch_token.assert_called_once_with("cid", "csec")
+
+    def test_token_refresh_second_error_raises(self):
+        """If the retry also returns 401, an AirflowException is raised."""
+        from airflow_provider_avito.hooks.avito import _AvitoAuthError
+
+        hook = _make_hook_with_token()
+        hook._fetch_token = MagicMock(return_value="new_tok")
+
+        with patch.object(
+            hook,
+            "_make_request",
+            side_effect=[_AvitoAuthError("401"), _AvitoAuthError("401 again")],
+        ):
+            with pytest.raises(AirflowException, match="after token refresh"):
+                hook._request_calls_page(0, "2026-06-09T00:00:00+03:00")
+
+    def test_credentials_fetched_once_per_instance(self):
+        """Repeated _request_calls_page calls share the credential cache."""
+        hook = _make_hook_with_token()
+
+        ok_page = {"calls": [], "error": None}
+
+        with patch.object(hook, "_make_request", return_value=ok_page):
+            hook._request_calls_page(0, "2026-06-09T00:00:00+03:00")
+            hook._request_calls_page(1000, "2026-06-09T00:00:00+03:00")
+            hook._request_calls_page(2000, "2026-06-09T00:00:00+03:00")
+
+        hook._get_credentials.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -499,3 +540,148 @@ class TestGetAccounts:
         ):
             result = get_accounts("nonexistent")
         assert result == []
+
+    def test_single_form_returns_empty_list(self):
+        """get_accounts for single-form extra returns [] (single entry not exposed)."""
+        conn = Connection(
+            conn_id="avito_test",
+            conn_type="http",
+            extra=json.dumps({"client_id": "cid", "client_secret": "csec"}),
+        )
+        with patch("airflow.hooks.base.BaseHook.get_connection", return_value=conn):
+            result = get_accounts("avito_test")
+        assert result == []
+
+    def test_malform_non_dict_entry(self):
+        """Non-dict entries in accounts are skipped; get_accounts returns []."""
+        conn = Connection(
+            conn_id="avito_test",
+            conn_type="http",
+            extra=json.dumps({"accounts": ["not-a-dict", 42]}),
+        )
+        with patch("airflow.hooks.base.BaseHook.get_connection", return_value=conn):
+            result = get_accounts("avito_test")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Test parse_connection
+# ---------------------------------------------------------------------------
+
+
+class TestParseConnection:
+    def test_single_form(self):
+        """Top-level client_id/client_secret → single; accounts list is empty."""
+        config = parse_connection({"client_id": "cid", "client_secret": "csec"})
+        assert config.accounts == []
+        assert config.single is not None
+        assert config.single.id is None
+        assert config.single.client_id == "cid"
+        assert config.single.client_secret == "csec"
+
+    def test_multi_form(self):
+        """Multi-account form populates accounts list."""
+        extra = {
+            "accounts": [
+                {"id": "acc1", "client_id": "c1", "client_secret": "s1"},
+                {"id": "acc2", "client_id": "c2", "client_secret": "s2"},
+            ]
+        }
+        config = parse_connection(extra)
+        assert len(config.accounts) == 2
+        assert config.accounts[0].id == "acc1"
+        assert config.accounts[0].client_id == "c1"
+        assert config.accounts[1].id == "acc2"
+        assert config.single is None
+
+    def test_entry_without_id_skipped(self):
+        """Entry missing 'id' key is skipped; valid entries remain."""
+        extra = {
+            "accounts": [
+                {"client_id": "c1", "client_secret": "s1"},  # no id
+                {"id": "acc2", "client_id": "c2", "client_secret": "s2"},
+            ]
+        }
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "acc2"
+
+    def test_dedup_by_sanitized_id(self):
+        """Two entries that map to the same sanitized id: first kept, second dropped."""
+        extra = {
+            "accounts": [
+                {"id": "a.b", "client_id": "c1", "client_secret": "s1"},
+                {"id": "a/b", "client_id": "c2", "client_secret": "s2"},
+            ]
+        }
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "a_b"
+        assert config.accounts[0].client_id == "c1"
+
+    def test_account_without_secrets_included(self):
+        """Entry with id but no secrets is kept in accounts (policy belongs to caller)."""
+        extra = {"accounts": [{"id": "acc1"}]}
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "acc1"
+        assert config.accounts[0].client_id is None
+        assert config.accounts[0].client_secret is None
+
+    def test_empty_extra(self):
+        """Empty extra dict → empty accounts and no single."""
+        config = parse_connection({})
+        assert config.accounts == []
+        assert config.single is None
+
+    def test_id_sanitization(self):
+        """Special chars in id are replaced with underscore."""
+        extra = {"accounts": [{"id": "a.b.c", "client_id": "c1", "client_secret": "s1"}]}
+        config = parse_connection(extra)
+        assert config.accounts[0].id == "a_b_c"
+
+    def test_non_dict_entry_skipped(self):
+        """Non-dict entries in accounts list are skipped without raising."""
+        extra = {"accounts": ["bad-entry", 42, None, {"id": "ok", "client_id": "c", "client_secret": "s"}]}
+        config = parse_connection(extra)
+        assert len(config.accounts) == 1
+        assert config.accounts[0].id == "ok"
+
+    def test_entry_with_id_none_skipped(self):
+        """Entry with key 'id' present but value None is skipped; accounts list is empty."""
+        extra = {"accounts": [{"id": None, "client_id": "c", "client_secret": "s"}]}
+        config = parse_connection(extra)
+        assert config.accounts == []
+
+    def test_entry_with_non_string_id_skipped(self):
+        """Entry with a non-string 'id' (e.g. integer) is skipped without raising."""
+        extra = {"accounts": [{"id": 123, "client_id": "c", "client_secret": "s"}]}
+        config = parse_connection(extra)
+        assert config.accounts == []
+
+    def test_non_list_accounts_field_ignored(self):
+        """A truthy non-list 'accounts' value (e.g. int) is treated as absent — no TypeError."""
+        config = parse_connection({"accounts": 42})
+        assert config.accounts == []
+        config2 = parse_connection({"accounts": True})
+        assert config2.accounts == []
+
+
+# ---------------------------------------------------------------------------
+# Test _get_credentials sanitization regression
+# ---------------------------------------------------------------------------
+
+
+class TestGetCredentialsSanitization:
+    def test_sanitized_id_matches_sanitized_account_id(self):
+        """account_id='a_b' (already sanitized) matches entry with id='a.b'."""
+        hook = AvitoHook(avito_conn_id="avito_test", account_id="a_b")
+        conn = Connection(
+            conn_id="avito_test",
+            conn_type="http",
+            extra=json.dumps(
+                {"accounts": [{"id": "a.b", "client_id": "c1", "client_secret": "s1"}]}
+            ),
+        )
+        hook.get_connection = MagicMock(return_value=conn)
+        assert hook._get_credentials() == ("c1", "s1")

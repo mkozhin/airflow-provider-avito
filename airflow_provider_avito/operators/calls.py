@@ -9,7 +9,7 @@ from typing import TypedDict
 
 from airflow.models import BaseOperator
 
-from airflow_provider_avito.hooks.avito import AvitoHook
+from airflow_provider_avito.hooks.avito import AvitoHook, CALL_FIELDS
 
 _OUTPUT_FORMATS = ("json", "csv")
 
@@ -20,25 +20,7 @@ class CallRecord(TypedDict):
     snapshot_ts: str | None
 
 
-_CSV_FIELDS = [
-    "id",
-    "buyer_phone",
-    "seller_phone",
-    "virtual_phone",
-    "create_time",
-    "start_time",
-    "date",
-    "duration",
-    "waiting_duration",
-    "price",
-    "price_rub",
-    "status_id",
-    "status",
-    "item_id",
-    "group_title",
-    "is_arbitrage_available",
-    "record_url",
-]
+_CSV_FIELDS = list(CALL_FIELDS)
 
 
 class AvitoCallsOperator(BaseOperator):
